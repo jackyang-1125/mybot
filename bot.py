@@ -313,10 +313,7 @@ async def slash_add_schedule(
     return
 
   # 檢查是否為已存在考試日期的前一天
-  # 假設已有的考試日期存在 exams_data 中，這裡我們對比所有的考試日期
   is_valid_day = False
-  # 收集目前所有的考試日期 (假設內容或備註有安排考試，或是比對所有已登記的日期)
-  # 這裡以比對現有所有排程日期（或特定考試標記）的前一天為例：
   existing_dates = set(e.get("date") for e in exams_data)
 
   for d_str in existing_dates:
@@ -328,10 +325,7 @@ async def slash_add_schedule(
     except ValueError:
       continue
 
-  # 如果完全沒有任何排程，或者剛好是某個排程日期的前一天，則允許新增
-  # 如果你想嚴格規定「必須是某個已有考試日期的前一天」，當 existing_dates 為空時也可以彈性放行或要求
   if existing_dates and not is_valid_day:
-    # 組合提示哪些日期的前一天是可以被接受的
     valid_suggestions = [
         (
             datetime.datetime.strptime(d, "%Y-%m-%d").date()
@@ -383,7 +377,8 @@ async def slash_del_schedule(
     if target_channel:
       await update_or_create_dashboard(target_channel)
     await interaction.response.send_message(
-        f"🗑️ 已成功刪除 ID 為 #{schedule_id} 的項目！", ephemeral=True
+        f"🗑️ 已成功刪除 ID 為 #{schedule_id} 的項目！",
+        ephemeral=True,
     )
   else:
     await interaction.response.send_message(
@@ -402,8 +397,10 @@ async def slash_init_dashboard(interaction: discord.Interaction):
   )
 
 
-@bot.tree.command(name="檢視課表", description="[專屬版面] 開啟內嵌互動式課表介面")
-@in_exclusive_channel()
+# 所有人皆可使用，且只有自己看得到 (ephemeral=True)
+@bot.tree.command(
+    name="檢視課表", description="[公開] 取得只有自己看得見的互動課表連結"
+)
 async def slash_view_schedule(interaction: discord.Interaction):
   web_url = os.environ.get(
       "RENDER_External_URL", "https://mybot-v6cj.onrender.com"
@@ -411,13 +408,13 @@ async def slash_view_schedule(interaction: discord.Interaction):
   view = discord.ui.View(timeout=None)
   view.add_item(
       discord.ui.Button(
-          label="📅 點擊開啟內嵌課表",
+          label="📅 點擊開啟互動課表",
           style=discord.ButtonStyle.link,
           url=web_url,
       )
   )
   await interaction.response.send_message(
-      "請點擊下方按鈕開啟互動課表：", view=view, ephemeral=True
+      "這是您的專屬課表連結（只有您看得見）：", view=view, ephemeral=True
   )
 
 
