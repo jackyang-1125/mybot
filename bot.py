@@ -1,99 +1,96 @@
 import datetime
 import asyncio
 import os
+import threading
+from flask import Flask, render_template_string
 import discord
 from discord import app_commands
 from discord.ext import commands, tasks
 
-# 初始化 Discord 機器人
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
+# ==================== 1. 設置 Flask 網頁伺服器 (解決 Render Port 問題並提供 HTML 彈出式視窗) ====================
+app = Flask(__name__)
 
-# 記憶體資料庫（格式：日期、節次、你自己輸入的內容）
-# 例如: {"id": 1, "date": "2026-09-14", "period": "第1節", "content": "國文\n張美涵"}
+# 記憶體資料庫
 exams_data = [
     {
         "id": 1,
         "date": "2026-09-14",
         "period": "第1節",
-        "content": "國文\n張美涵",
+        "content": "國文<br>張美涵",
     }
 ]
 
 # 專屬論壇 / 討論串 ID
 EXCLUSIVE_CHANNEL_ID = 1548647622263181342
-
 dashboard_message_id = None
-current_week_offset = 0  # 0 = 本週, +1 = 下一週, -1 = 上一週
+
+HTML_TEMPLATE = """
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+    <meta charset="UTF-8">
+    <title>班級互動式課表</title>
+    <style>
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #313338; color: #dbdee1; padding: 20px; margin: 0; }
+        h2 { text-align: center; color: #fff; }
+        .table-container { overflow-x: auto; background: #2b2d31; padding: 15px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        table { width: 100%; border-collapse: collapse; text-align: center; font-size: 14px; }
+        th, td { border: 1px solid #3f4147; padding: 10px; vertical-align: middle; }
+        th { background: #1e1f22; color: #f2f3f5; }
+        tr:nth-child(even) { background: #2b2d31; }
+        tr:nth-child(odd) { background: #313338; }
+        .empty { color: #80848e; }
+        .sat-disabled { background: #232428 !important; color: #555; }
+    </style>
+</head>
+<body>
+    <h2>📅 班級互動式課表</h2>
+    <div class="table-container">
+        <table>
+            <thead>
+                <tr>
+                    <th>節次</th>
+                    <th>時間</th>
+                    <th>一</th>
+                    <th>二</th>
+                    <th>三</th>
+                    <th>四</th>
+                    <th>五</th>
+                    <th>六</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for period_name, time_str in time_slots %}
+                <tr>
+                    <td><strong>{{ period_name }}</strong></td>
+                    <td>{{ time_str }}</td>
+                    {% for i in range(6) %}
+                        {% if i == 5 and loop.index0 > 4 %}
+                            <td class="sat-disabled">-</td>
+                        {% else %}
+                            <td>
+                                {% set found = namespace(content='') %}
+                                {%- for item in exams_data -%}
+                                    {%- if item.period == period_name -%}
+                                        {{ found.content | safe }}
+                                    {%- endif -%}
+                                {%- endfor -%}
+                                {% if not found.content %}<span class="empty">-</span>{% endif %}
+                            </td>
+                        {% endif %}
+                    {% endfor %}
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+    </div>
+</body>
+</html>
+"""
 
 
-@bot.event
-async def on_ready():
-  print(f"Discord 機器人已成功登入 --> {bot.user}")
-  try:
-    synced = await bot.tree.sync()
-    print(f"已同步 {len(synced)} 個 Slash 指令")
-  except Exception as e:
-    print(e)
-  daily_exam_reminder.start()
-
-
-# 背景任務：每天檢查提醒並 @everyone
-@tasks.loop(hours=24)
-async def daily_exam_reminder():
-  now_taiwan = datetime.datetime.now(
-      datetime.timezone(datetime.timedelta(hours=8))
-  )
-  tomorrow = (now_taiwan + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-
-  for exam in exams_data:
-    if exam["date"] == tomorrow:
-      channel = bot.get_channel(EXCLUSIVE_CHANNEL_ID)
-      if channel:
-        embed = discord.Embed(
-            title="📢 課程/時間排程提醒",
-            description=(
-                f"明天 (**{tomorrow}**) 的排程項目：\n"
-                f"⏰ **{exam['period']}**\n"
-                f"📝 **{exam['content']}**"
-            ),
-            color=0xFF5733,
-        )
-        await channel.send(content="@everyone", embed=embed)
-
-
-@daily_exam_reminder.before_loop
-async def before_reminder():
-  await bot.wait_until_ready()
-
-
-def get_target_week_range(offset):
-  now_taiwan = datetime.datetime.now(
-      datetime.timezone(datetime.timedelta(hours=8))
-  )
-  start_of_term = datetime.datetime(
-      now_taiwan.year, 9, 1, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
-  )
-  base_date = now_taiwan + datetime.timedelta(weeks=offset)
-
-  delta_days = (base_date - start_of_term).days
-  week_num = max(1, (delta_days // 7) + 1)
-
-  # 取得週一到週六的日期
-  start_of_week = base_date - datetime.timedelta(days=base_date.weekday())  # 週一
-  days = [start_of_week + datetime.timedelta(days=i) for i in range(6)]  # 週一至週六
-
-  return week_num, days
-
-
-def create_dashboard_embed(week_offset):
-  week_num, days = get_target_week_range(week_offset)
-  now_taiwan = datetime.datetime.now(
-      datetime.timezone(datetime.timedelta(hours=8))
-  )
-
-  # 對應截圖中的時間表結構
+@app.route("/")
+def index():
   time_slots = [
       ("第0節早自修", "07:30 - 08:00"),
       ("第1節", "08:10 - 08:55"),
@@ -107,108 +104,98 @@ def create_dashboard_embed(week_offset):
       ("第9節", "16:55 - 17:40"),
       ("第10節", "17:45 - 18:30"),
   ]
-
-  # 建立對應當週每一天日期的對照表 (YYYY-MM-DD -> 星期幾)
-  day_date_map = {}
-  headers = ["節次", "時間"]
-  weekdays_name = ["一", "二", "三", "四", "五", "六"]
-
-  for i, d in enumerate(days):
-    date_str = d.strftime("%Y-%m-%d")
-    day_date_map[i] = date_str
-    headers.append(f"{weekdays_name[i]}<br>({d.strftime('%m/%d')})")
-
-  # 用 Markdown 模擬真實 HTML 表格排版
-  table_lines = []
-  table_lines.append(
-      "| " + " | ".join(["節次", "時間", "一", "二", "三", "四", "五", "六"]) + " |"
+  return render_template_string(
+      HTML_TEMPLATE, time_slots=time_slots, exams_data=exams_data
   )
-  table_lines.append("|" + "---|---|" + "---|---|" * 3)
 
-  for period_name, time_str in time_slots:
-    row = [period_name, time_str]
-    for i in range(6):
-      target_date = day_date_map[i]
-      # 尋找該日期與該節次的資料
-      matched = [
-          e
-          for e in exams_data
-          if e["date"] == target_date and e["period"] == period_name
-      ]
-      if matched:
-        # 顯示內容與 ID
-        content_str = matched[0]["content"].replace("\n", "<br>")
-        row.append(f"{content_str}<br>*(ID:{matched[0]['id']})*")
-      else:
-        row.append("-")
-    table_lines.append("| " + " | ".join(row) + " |")
 
-  table_markdown = "\n".join(table_lines)
+def run_flask():
+  port = int(os.environ.get("PORT", 10000))
+  app.run(host="0.0.0.0", port=port)
 
+
+# ==================== 2. Discord 機器人核心 ====================
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
+dashboard_message_id = None
+
+
+@bot.event
+async def on_ready():
+  print(f"Discord 機器人已成功登入 --> {bot.user}")
+  try:
+    synced = await bot.tree.sync()
+    print(f"已同步 {len(synced)} 個 Slash 指令")
+  except Exception as e:
+    print(e)
+  daily_exam_reminder.start()
+
+
+@tasks.loop(hours=24)
+async def daily_exam_reminder():
+  now_taiwan = datetime.datetime.now(
+      datetime.timezone(datetime.timedelta(hours=8))
+  )
+  tomorrow = (now_taiwan + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
+  for exam in exams_data:
+    if exam["date"] == tomorrow:
+      channel = bot.get_channel(EXCLUSIVE_CHANNEL_ID)
+      if channel:
+        embed = discord.Embed(
+            title="📢 課程時間提醒",
+            description=(
+                f"明天 (**{tomorrow}**) 的排程：\n⏰ **{exam['period']}**\n📌"
+                f" **{exam['content']}**"
+            ),
+            color=0xFF5733,
+        )
+        await channel.send(content="@everyone", embed=embed)
+
+
+@daily_exam_reminder.before_loop
+async def before_reminder():
+  await bot.wait_until_ready()
+
+
+def create_dashboard_view():
+  # 取得 Render 部署網址（請確保將 YOUR_RENDER_URL 換成你實際的網址或透過環境變數傳入）
+  web_url = os.environ.get(
+      "RENDER_External_URL", "https://mybot-xxxx.onrender.com"
+  )
+  view = discord.ui.View(timeout=None)
+  view.add_item(
+      discord.ui.Button(
+          label="🌐 開啟互動式 HTML 課表",
+          style=discord.ButtonStyle.link,
+          url=web_url,
+      )
+  )
+  return view
+
+
+def create_dashboard_embed():
+  now_taiwan = datetime.datetime.now(
+      datetime.timezone(datetime.timedelta(hours=8))
+  )
   embed = discord.Embed(
-      title=f"📅 班級課表與時間總表 (第 {week_num} 週)",
+      title="📅 班級課表與時間總表",
       description=(
-          f"📊 **HTML 模擬表格檢視**\n{table_markdown}\n\n"
-          "💡 使用下方按鈕切換 **上一週 / 下一週**\n"
-          "➕ 新增指令：`/add_schedule` | 🗑️ 刪除指令：`/del_schedule`"
+          "點擊下方按鈕即可開啟**彈出式 HTML 互動網頁課表**（支援手機與電腦版"
+          "內嵌檢視）！\n\n➕ 新增指令：`/add_schedule` | 🗑️ 刪除指令：`/del_schedule`"
       ),
       color=0x3498DB,
       timestamp=now_taiwan,
   )
-  embed.set_footer(text=f"系統自動換週 • 當前顯示第 {week_num} 週")
+  embed.set_footer(text="動態 HTML 課表系統")
   return embed
 
 
-class DashboardView(discord.ui.View):
-
-  def __init__(self):
-    super().__init__(timeout=None)
-
-  @discord.ui.button(
-      label="◀️ 上一週",
-      style=discord.ButtonStyle.secondary,
-      custom_id="prev_week",
-  )
-  async def prev_week_button(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    global current_week_offset
-    current_week_offset -= 1
-    await interaction.response.edit_message(
-        embed=create_dashboard_embed(current_week_offset), view=self
-    )
-
-  @discord.ui.button(
-      label="🔄 重新整理",
-      style=discord.ButtonStyle.primary,
-      custom_id="refresh_dashboard",
-  )
-  async def refresh_button(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    await interaction.response.edit_message(
-        embed=create_dashboard_embed(current_week_offset), view=self
-    )
-
-  @discord.ui.button(
-      label="下一週 ▶️",
-      style=discord.ButtonStyle.secondary,
-      custom_id="next_week",
-  )
-  async def next_week_button(
-      self, interaction: discord.Interaction, button: discord.ui.Button
-  ):
-    global current_week_offset
-    current_week_offset += 1
-    await interaction.response.edit_message(
-        embed=create_dashboard_embed(current_week_offset), view=self
-    )
-
-
 async def update_or_create_dashboard(channel):
-  global dashboard_message_id, current_week_offset
-  embed = create_dashboard_embed(current_week_offset)
-  view = DashboardView()
+  global dashboard_message_id
+  embed = create_dashboard_embed()
+  view = create_dashboard_view()
 
   if dashboard_message_id:
     try:
@@ -226,7 +213,6 @@ def in_exclusive_channel():
   async def predicate(interaction: discord.Interaction):
     channel = interaction.channel
     is_valid = False
-
     if interaction.channel_id == EXCLUSIVE_CHANNEL_ID:
       is_valid = True
     elif (
@@ -248,9 +234,7 @@ def in_exclusive_channel():
 
 @bot.tree.command(name="add_schedule", description="[專屬版面] 在課表中填入內容")
 @app_commands.describe(
-    date="日期 (格式：YYYY-MM-DD)",
-    period="選擇節次 (例如：第0節早自修、第1節至第10節)",
-    content="要填入的內容（例如：國文\n張美涵）",
+    date="日期 (格式：YYYY-MM-DD)", period="選擇節次", content="要填入的內容"
 )
 @app_commands.choices(
     period=[
@@ -293,8 +277,8 @@ async def slash_add_schedule(
   )
 
 
-@bot.tree.command(name="del_schedule", description="[專屬版面] 透過項目 ID 刪除填入的內容")
-@app_commands.describe(schedule_id="要刪除的項目 ID (可從表格內看到)")
+@bot.tree.command(name="del_schedule", description="[專屬版面] 透過項目 ID 刪除內容")
+@app_commands.describe(schedule_id="要刪除的項目 ID")
 @in_exclusive_channel()
 async def slash_del_schedule(
     interaction: discord.Interaction, schedule_id: int
@@ -316,20 +300,22 @@ async def slash_del_schedule(
     )
   else:
     await interaction.response.send_message(
-        f"❌ 找不到 ID 為 #{schedule_id} 的項目，請確認編號。", ephemeral=True
+        f"❌ 找不到 ID 為 #{schedule_id} 的項目。", ephemeral=True
     )
 
 
-@bot.tree.command(name="init_dashboard", description="[專屬版面] 生成或重置課表總表面板")
+@bot.tree.command(name="init_dashboard", description="[專屬版面] 生成課表面板")
 @in_exclusive_channel()
 async def slash_init_dashboard(interaction: discord.Interaction):
   target_channel = interaction.channel
   await update_or_create_dashboard(target_channel)
   await interaction.response.send_message(
-      "✅ 課表總表面板已成功生成！", ephemeral=True
+      "✅ 互動式 HTML 課表面板已成功生成！", ephemeral=True
   )
 
 
 if __name__ == "__main__":
+  # 同時啟動 Flask 網頁伺服器與 Discord 機器人
+  threading.Thread(target=run_flask, daemon=True).start()
   token = os.environ.get("DISCORD_TOKEN", "YOUR_BOT_TOKEN_HERE")
   bot.run(token)
