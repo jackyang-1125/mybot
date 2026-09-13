@@ -20,7 +20,6 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <title>班級互動式課表</title>
-    <!-- 引入 Discord Embedded App SDK 支援內嵌互動 -->
     <script src="https://internals-ssl.discord.com/sdk/v1/embedded-app-sdk.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #313338; color: #dbdee1; padding: 20px; margin: 0; display: flex; flex-direction: column; align-items: center; }
@@ -83,7 +82,6 @@ HTML_TEMPLATE = """
                     <td><strong>{{ period_name }}</strong></td>
                     <td>{{ time_str }}</td>
                     {% for i in range(6) %}
-                        {# 星期六只上到第4節 (第0~4節有效，第5節以後停用) #}
                         {% if i == 5 and loop.index0 > 4 %}
                             <td class="sat-disabled">-</td>
                         {% else %}
@@ -109,7 +107,6 @@ HTML_TEMPLATE = """
         </table>
     </div>
 
-    <!-- Wordle 風格彈出視窗 -->
     <div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
         <div class="modal-box" onclick="event.stopPropagation()">
             <h3 id="modalTitle">課程詳細資訊</h3>
@@ -119,14 +116,12 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
-        // 初始化 Discord SDK 支援內嵌活動
         let discordSdk;
         window.addEventListener('DOMContentLoaded', async () => {
             if (window.DiscordSDK) {
-                const clientId = "你的 Discord Client ID"; // 請填入你的應用程式 Client ID
+                const clientId = "你的 Discord Client ID";
                 discordSdk = new window.DiscordSDK(clientId);
                 await discordSdk.ready();
-                console.log("Discord SDK initialized successfully.");
             }
         });
 
@@ -215,8 +210,8 @@ def create_dashboard_embed():
   embed = discord.Embed(
       title="📅 班級課表與時間總表",
       description=(
-          "點擊下方按鈕即可透過 Discord 內嵌畫面開啟**互動式網頁課表**！\n\n➕"
-          " 新增指令：`/add_schedule` | 🗑️ 刪除指令：`/del_schedule`"
+          "點擊下方按鈕即可開啟**互動式網頁課表**！\n\n➕ 新增指令：`/add_schedule`"
+          " | 🗑️ 刪除指令：`/del_schedule` | 🔍 檢視指令：`/檢視課表`"
       ),
       color=0x3498DB,
       timestamp=now_taiwan,
@@ -345,6 +340,23 @@ async def slash_init_dashboard(interaction: discord.Interaction):
   await interaction.response.send_message(
       "✅ 互動式 HTML 課表面板已成功生成！", ephemeral=True
   )
+
+
+@bot.tree.command(name="檢視課表", description="檢視指定日期的課表與詳細資訊")
+@app_commands.describe(date="選擇要檢視的日期 (格式：YYYY-MM-DD)")
+async def slash_view_schedule(interaction: discord.Interaction, date: str):
+  day_exams = [e for e in exams_data if e.get("date") == date]
+
+  if not day_exams:
+    await interaction.response.send_message(
+        f"📅 `{date}` 目前沒有任何排程內容。", ephemeral=True
+    )
+    return
+
+  content_text = f"📅 **{date} 課表與內容**\n" + "\n".join([
+      f"- **{e['period']}**: {e['content']} (ID: #{e['id']})" for e in day_exams
+  ])
+  await interaction.response.send_message(content_text, ephemeral=True)
 
 
 if __name__ == "__main__":
