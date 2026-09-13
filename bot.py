@@ -20,8 +20,8 @@ exams_data = [
     }
 ]
 
-# 你的專屬頻道 ID
-EXCLUSIVE_CHANNEL_ID = 1548647361494913035
+# ⚠️ 這裡已經設定為你的論壇/討論串 ID
+EXCLUSIVE_CHANNEL_ID = 1548647622263181342
 
 dashboard_message_id = None
 
@@ -37,6 +37,7 @@ async def on_ready():
   daily_exam_reminder.start()
 
 
+# 背景任務：每天檢查一次，如果在明天有登記考試，就在前一天於指定版面發送提醒
 @tasks.loop(hours=24)
 async def daily_exam_reminder():
   now_taiwan = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
@@ -125,11 +126,23 @@ async def update_or_create_dashboard(channel):
   dashboard_message_id = msg.id
 
 
+# 檢查是否為專屬頻道或其底下的討論串
 def in_exclusive_channel():
   async def predicate(interaction: discord.Interaction):
-    if interaction.channel_id != EXCLUSIVE_CHANNEL_ID:
+    channel = interaction.channel
+    is_valid = False
+
+    if interaction.channel_id == EXCLUSIVE_CHANNEL_ID:
+      is_valid = True
+    elif (
+        isinstance(channel, discord.Thread)
+        and channel.parent_id == EXCLUSIVE_CHANNEL_ID
+    ):
+      is_valid = True
+
+    if not is_valid:
       await interaction.response.send_message(
-          f"❌ 此指令只能在專屬頻道 <#{EXCLUSIVE_CHANNEL_ID}> 中使用！",
+          f"❌ 此指令只能在專屬版面 <#{EXCLUSIVE_CHANNEL_ID}> 中使用！",
           ephemeral=True,
       )
       return False
@@ -165,8 +178,14 @@ async def slash_add_exam(
   exams_data.append(new_exam)
 
   channel = bot.get_channel(EXCLUSIVE_CHANNEL_ID)
-  if channel:
-    await update_or_create_dashboard(channel)
+  # 如果是在討論串裡執行，也可以直接更新當前討論串或指定頻道
+  target_channel = (
+      interaction.channel
+      if isinstance(interaction.channel, discord.Thread)
+      else channel
+  )
+  if target_channel:
+    await update_or_create_dashboard(target_channel)
 
   await interaction.response.send_message(
       f"✅ 成功新增考試排程並已即時更新總表！\n> **{date} ({period}) {subject}**",
@@ -180,8 +199,8 @@ async def slash_add_exam(
 )
 @in_exclusive_channel()
 async def slash_init_dashboard(interaction: discord.Interaction):
-  channel = bot.get_channel(EXCLUSIVE_CHANNEL_ID)
-  await update_or_create_dashboard(channel)
+  target_channel = interaction.channel
+  await update_or_create_dashboard(target_channel)
   await interaction.response.send_message(
       "✅ 即時考試排程表格面板已成功生成！", ephemeral=True
   )
