@@ -7,13 +7,10 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 
-# ==================== 1. 設置 Flask 網頁伺服器 (Wordle 風格彈出式 Modal 互動課表) ====================
+# ==================== 1. 設置 Flask 網頁伺服器 ====================
 app = Flask(__name__)
 
-# 初始資料清空（移除預設項目）
 exams_data = []
-
-# 專屬論壇 / 討論串 ID
 EXCLUSIVE_CHANNEL_ID = 1548647622263181342
 dashboard_message_id = None
 
@@ -23,6 +20,8 @@ HTML_TEMPLATE = """
 <head>
     <meta charset="UTF-8">
     <title>班級互動式課表</title>
+    <!-- 引入 Discord Embedded App SDK 支援內嵌互動 -->
+    <script src="https://internals-ssl.discord.com/sdk/v1/embedded-app-sdk.js"></script>
     <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #313338; color: #dbdee1; padding: 20px; margin: 0; display: flex; flex-direction: column; align-items: center; }
         h2 { color: #fff; margin-bottom: 10px; }
@@ -91,7 +90,6 @@ HTML_TEMPLATE = """
                             {% set cell_data = namespace(text='', id='') %}
                             {% for item in exams_data %}
                                 {% if item.period == period_name %}
-                                    {# 這裡可以依實際需求對應星期，目前簡化示範帶入符合該節次的資料 #}
                                     {% set cell_data.text = item.content %}
                                     {% set cell_data.id = item.id %}
                                 {% endif %}
@@ -121,6 +119,17 @@ HTML_TEMPLATE = """
     </div>
 
     <script>
+        // 初始化 Discord SDK 支援內嵌活動
+        let discordSdk;
+        window.addEventListener('DOMContentLoaded', async () => {
+            if (window.DiscordSDK) {
+                const clientId = "你的 Discord Client ID"; // 請填入你的應用程式 Client ID
+                discordSdk = new window.DiscordSDK(clientId);
+                await discordSdk.ready();
+                console.log("Discord SDK initialized successfully.");
+            }
+        });
+
         function openModal(period, time, content, id) {
             document.getElementById('modalTitle').innerText = period + " (" + time + ")";
             if(content.trim() === "") {
@@ -186,7 +195,7 @@ async def on_ready():
 
 def create_dashboard_view():
   web_url = os.environ.get(
-      "RENDER_External_URL", "https://mybot-xxxx.onrender.com"
+      "RENDER_External_URL", "https://mybot-v6cj.onrender.com"
   )
   view = discord.ui.View(timeout=None)
   view.add_item(
@@ -206,7 +215,7 @@ def create_dashboard_embed():
   embed = discord.Embed(
       title="📅 班級課表與時間總表",
       description=(
-          "點擊下方按鈕即可開啟**互動式網頁課表**（支援 Wordle 風格彈出視窗檢視詳細內容與老師）！\n\n➕"
+          "點擊下方按鈕即可透過 Discord 內嵌畫面開啟**互動式網頁課表**！\n\n➕"
           " 新增指令：`/add_schedule` | 🗑️ 刪除指令：`/del_schedule`"
       ),
       color=0x3498DB,
@@ -334,7 +343,7 @@ async def slash_init_dashboard(interaction: discord.Interaction):
   target_channel = interaction.channel
   await update_or_create_dashboard(target_channel)
   await interaction.response.send_message(
-      "✅ Wordle 風格彈出式互動 HTML 課表面板已成功生成！", ephemeral=True
+      "✅ 互動式 HTML 課表面板已成功生成！", ephemeral=True
   )
 
 
