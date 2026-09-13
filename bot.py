@@ -64,7 +64,6 @@ def clean_expired_schedules():
     for item in exams_data:
         try:
             item_date = datetime.datetime.strptime(item["date"], "%Y-%m-%d").date()
-            # 如果排程日期大於或等於今天，則保留
             if item_date >= now_taiwan_date:
                 valid_exams.append(item)
         except ValueError:
@@ -78,12 +77,10 @@ class DashboardView(discord.ui.View):
 
     @discord.ui.button(label="🔔 立即提醒測試", style=discord.ButtonStyle.primary, custom_id="btn_test_reminder", row=0)
     async def test_reminder_btn(self, interaction: discord.Interaction, button: discord.ui.Button):
-        # 測試訊息改成直接 @ 觸發的使用者
         await interaction.response.send_message(f"🔔 {interaction.user.mention} **[系統提醒測試]** 這是一則手動觸發的課表與考試提醒測試通知！", ephemeral=False)
 
 
 def create_dashboard_embed():
-    # 每次生成面板前先自動過濾掉過期的單次排程
     clean_expired_schedules()
     
     now_taiwan = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8)))
@@ -109,7 +106,8 @@ def create_dashboard_embed():
     else:
         rec_summary = ""
         for item in recurring_tasks:
-            rec_summary += f"🔄 **ID R#{item['id']}** | 🔁 **頻率：{item['frequency']}** | ⏰ **{item['time']}**\n> {item['content']}\n\n"
+            freq_desc = f"每週 ({item['weekday']})" if item['frequency'] == "每週重複" else "每日重複"
+            rec_summary += f"🔄 **ID R#{item['id']}** | 🔁 **{freq_desc}** | ⏰ **{item['time']}**\n> {item['content']}\n\n"
         embed.add_field(name="🔄 重複任務與提醒清單", value=rec_summary[:1024], inline=False)
 
     embed.set_footer(text="Discord 官方排程與動態整合系統 | 自動清除過期事項")
@@ -135,7 +133,6 @@ async def update_or_create_dashboard(channel):
 
 def is_admin():
     async def predicate(interaction: discord.Interaction):
-        # 僅檢查是否為伺服器管理員或擁有者
         is_server_admin = interaction.user.guild_permissions.administrator or interaction.user == interaction.guild.owner
         if not is_server_admin:
             await interaction.response.send_message("❌ 只有伺服器管理員（版主）才能執行此指令！", ephemeral=True)
@@ -186,7 +183,6 @@ async def slash_add_schedule(interaction: discord.Interaction, date: str, period
         await interaction.response.send_message("❌ 日期格式錯誤，請使用 `YYYY-MM-DD`（例如 `2026-09-14`）。", ephemeral=True)
         return
 
-    # 檢查輸入的日期是否已經過期
     now_taiwan_date = datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=8))).date()
     if input_date_obj < now_taiwan_date:
         await interaction.response.send_message("❌ 無法新增已經過期的日期排程！", ephemeral=True)
@@ -203,17 +199,37 @@ async def slash_add_schedule(interaction: discord.Interaction, date: str, period
     await interaction.response.send_message(f"✅ 成功新增排程 (ID: #{new_id})，並已同步更新至課表面板！", ephemeral=True)
 
 
-@bot.tree.command(name="add_recurring", description="[版主專用] 新增重複性任務或提醒（例如每日、每週）")
-@app_commands.describe(frequency="選擇重複頻率", time="執行時間 (格式 HH:MM，例如 07:30)", content="重複任務內容")
-@app_commands.choices(frequency=[
-    app_commands.Choice(name="每日重複 (Daily)", value="每日重複"),
-    app_commands.Choice(name="每週重複 (Weekly)", value="每週重複"),
-])
+@bot.tree.command(name="add_recurring", description="[版主專用] 新增重複性任務或提醒（支援每日或每週指定星期幾）")
+@app_commands.describe(
+    frequency="選擇重複頻率", 
+    time="執行時間 (格式 HH:MM，例如 07:30)", 
+    weekday="若選每週重複，請選擇星期幾（每日重複可隨意選）", 
+    content="重複任務內容"
+)
+@app_commands.choices(
+    frequency=[
+        app_commands.Choice(name="每日重複 (Daily)", value="每日重複"),
+        app_commands.Choice(name="每週重複 (Weekly)", value="每週重複"),
+    ],
+    weekday=[
+        app_commands.Choice(name="星期一", value="星期一"),
+        app_commands.Choice(name="星期二", value="星期二"),
+        app_commands.Choice(name="星期三", value="星期三"),
+        app_commands.Choice(name="星期四", value="星期四"),
+        app_commands.Choice(name="星期五", value="星期五"),
+        app_commands.Choice(name="星期六", value="星期六"),
+        app_commands.Choice(name="星期日", value="星期日"),
+    ]
+)
 @is_admin()
 @in_exclusive_channel()
-async def slash_add_recurring(interaction: discord.Interaction, frequency: str, time: str, content: str):
+async def slash_add_recurring(interaction: discord.Interaction, frequency: str, time: str, weekday: str, content: str):
     new_id = max([r["id"] for r in recurring_tasks], default=0) + 1
-    new_task = {"id": new_id, "frequency": frequency, "time": time, "content": content}
+    
+    # 如果是每日重複，weekday 欄位可以自動標示為「每天」
+    actual_weekday = weekday if frequency == "每週重複" else "每天"
+    
+    new_task = {"id": new_id, "frequency": frequency, "weekday": actual_weekday, "time": time, "content": content}
     recurring_tasks.append(new_task)
 
     target_channel = interaction.channel if isinstance(interaction.channel, discord.Thread) else bot.get_channel(EXCLUSIVE_CHANNEL_ID)
