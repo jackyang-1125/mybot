@@ -1,16 +1,14 @@
-import asyncio
 import datetime
 import os
-import threading
-from flask import Flask, render_template
-from flask_socketio import SocketIO, emit
 import discord
 from discord.ext import commands, tasks
 
-app = Flask(__name__)
-app.config["SECRET_KEY"] = "secret!"
-socketio = SocketIO(app, cors_allowed_origins="*")
+# 初始化 Discord 機器人
+intents = discord.Intents.default()
+intents.message_content = True
+bot = commands.Bot(command_prefix="!", intents=intents)
 
+# 記憶體資料庫（儲存考試排程）
 exams_data = [
     {
         "id": 1,
@@ -20,24 +18,14 @@ exams_data = [
         "note": "第一冊全",
     }
 ]
-forum_posts = [
-    {
-        "author": "系統公告",
-        "content": "歡迎使用 Discord 聯絡簿與考試排程系統！",
-        "time": "2026-09-13 19:30",
-    }
-]
 
-intents = discord.Intents.default()
-intents.message_content = True
-bot = commands.Bot(command_prefix="!", intents=intents)
-
-DISCORD_CHANNEL_ID = 123456789012345678  # 請換成你的頻道 ID
+# 請填入你的 Discord 頻道 ID（用來發送考試提醒）
+DISCORD_CHANNEL_ID = 123456789012345678
 
 
 @bot.event
 async def on_ready():
-  print(f"Discord 機器人已登入 --> {bot.user}")
+  print(f"Discord 機器人已成功登入 --> {bot.user}")
   try:
     synced = await bot.tree.sync()
     print(f"已同步 {len(synced)} 個 Slash 指令")
@@ -46,10 +34,12 @@ async def on_ready():
   daily_exam_reminder.start()
 
 
+# 背景任務：每天檢查一次，如果在明天有登記考試，就在前一天發送提醒
 @tasks.loop(hours=24)
 async def daily_exam_reminder():
   now_taiwan = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
   tomorrow = (now_taiwan + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
+
   for exam in exams_data:
     if exam["date"] == tomorrow:
       channel = bot.get_channel(DISCORD_CHANNEL_ID)
@@ -70,12 +60,16 @@ async def before_reminder():
   await bot.wait_until_ready()
 
 
-@bot.tree.command(name="add_exam", description="新增考試排程")
+# --- Discord 伺服器斜線指令 ---
+
+
+# 指令 1：新增考試排程
+@bot.tree.command(name="add_exam", description="在伺服器中新增考試排程")
 @discord.app.commands.describe(
-    date="日期 (YYYY-MM-DD)",
-    period="節次",
-    subject="科目",
-    note="備註",
+    date="考試日期 (格式：YYYY-MM-DD)",
+    period="節次 (例如：第零節早自修 / 第1節)",
+    subject="考試科目",
+    note="備註或考試範圍",
 )
 async def slash_add_exam(
     interaction: discord.Interaction,
@@ -92,17 +86,28 @@ async def slash_add_exam(
       "note": note,
   }
   exams_data.append(new_exam)
-  socketio.emit("update_exams", exams_data)
-  await interaction.response.send_message(
-      f"✅ 成功新增考試！\n> 日期：{date} | 科目：**{subject}**"
+
+  embed = discord.Embed(
+      title="✅ 成功新增考試排程", color=0x2ECC71, timestamp=datetime.datetime.now()
   )
+  embed.add_field(name="日期", value=date, inline=True)
+  embed.add_field(name="節次", value=period, inline=True)
+  embed.add_field(name="科目", value=subject, inline=True)
+  embed.add_field(name="範圍/備註", value=note, inline=False)
+  embed.set_footer(text=f"建立者：{interaction.user.name}")
+
+  await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="list_exams", description="查看所有考試排程")
+# 指令 2：查看所有考試排程
+@bot.tree.command(name="list_exams", description="查看目前所有的考試排程列表")
 async def slash_list_exams(interaction: discord.Interaction):
   if not exams_data:
-    await interaction.response.send_message("目前沒有考試排程。")
+    await interaction.response.send_message(
+        "目前伺服器中沒有任何考試排程。"
+    )
     return
+
   embed = discord.Embed(title="📋 目前考試排程列表", color=0x3498DB)
   for exam in exams_data:
     embed.add_field(
@@ -113,58 +118,7 @@ async def slash_list_exams(interaction: discord.Interaction):
   await interaction.response.send_message(embed=embed)
 
 
-@bot.tree.command(name="forum_post", description="在論壇發布討論")
-@discord.app.commands.describe(content="想說的話")
-async def slash_forum_post(interaction: discord.Interaction, content: str):
-  time_str = (
-      datetime.datetime.utcnow() + datetime.timedelta(hours=8)
-  ).strftime("%Y-%m-%d %H:%M")
-  new_post = {
-      "author": interaction.user.name,
-      "content": content,
-      "time": time_str,
-  }
-  forum_posts.insert(0, new_post)
-  socketio.emit("update_posts", forum_posts)
-  await interaction.response.send_message(f"💬 成功發布貼文！\n> {content}")
-
-
-@app.route("/")
-def index():
-  return render_template("index.html")
-
-
-@socketio.on("connect")
-def handle_connect():
-  emit("update_data", {"exams": exams_data, "posts": forum_posts})
-
-
-@socketio.on("add_exam")
-def handle_add_exam(data):
-  new_exam = {
-      "id": len(exams_data) + 1,
-      "date": data["date"],
-      "period": data["period"],
-      "subject": data["subject"],
-      "note": data["note"],
-  }
-  exams_data.append(new_exam)
-  socketio.emit("update_exams", exams_data)
-
-
-@socketio.on("new_post")
-def handle_new_post(data):
-  forum_posts.insert(0, data)
-  socketio.emit("update_posts", forum_posts)
-
-
-def run_flask():
-  port = int(os.environ.get("PORT", 5000))
-  socketio.run(app, host="0.0.0.0", port=port, debug=False, use_reloader=False)
-
-
+# 啟動機器人
 if __name__ == "__main__":
-  flask_thread = threading.Thread(target=run_flask)
-  flask_thread.start()
-  # 從環境變數讀取 Token，或者直接填入你的 Bot Token
-  bot.run(os.environ.get("DISCORD_TOKEN", "YOUR_BOT_TOKEN_HERE"))
+  token = os.environ.get("DISCORD_TOKEN", "YOUR_BOT_TOKEN_HERE")
+  bot.run(token)
