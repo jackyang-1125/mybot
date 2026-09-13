@@ -195,7 +195,7 @@ def create_dashboard_view():
   view = discord.ui.View(timeout=None)
   view.add_item(
       discord.ui.Button(
-          label="🌐 開啟 Wordle 風格互動課表",
+          label="🌐 開啟互動課表",
           style=discord.ButtonStyle.link,
           url=web_url,
       )
@@ -237,6 +237,20 @@ async def update_or_create_dashboard(channel):
   dashboard_message_id = msg.id
 
 
+# 檢查是否為管理員 (版主) 的 Decorator
+def is_admin():
+  async def predicate(interaction: discord.Interaction):
+    if not interaction.user.guild_permissions.administrator:
+      await interaction.response.send_message(
+          "❌ 只有伺服器管理員（版主）才能執行此指令！", ephemeral=True
+      )
+      return False
+    return True
+
+  return app_commands.check(predicate)
+
+
+# 檢查是否在專屬版面的 Decorator
 def in_exclusive_channel():
   async def predicate(interaction: discord.Interaction):
     channel = interaction.channel
@@ -260,7 +274,7 @@ def in_exclusive_channel():
   return app_commands.check(predicate)
 
 
-@bot.tree.command(name="add_schedule", description="[專屬版面] 在課表中填入內容")
+@bot.tree.command(name="add_schedule", description="[版主專用] 在課表中填入內容")
 @app_commands.describe(
     date="日期 (格式：YYYY-MM-DD)", period="選擇節次", content="要填入的內容"
 )
@@ -281,6 +295,7 @@ def in_exclusive_channel():
         app_commands.Choice(name="第10節 (17:45-18:30)", value="第10節"),
     ]
 )
+@is_admin()
 @in_exclusive_channel()
 async def slash_add_schedule(
     interaction: discord.Interaction,
@@ -288,6 +303,48 @@ async def slash_add_schedule(
     period: str,
     content: str,
 ):
+  try:
+    input_date = datetime.datetime.strptime(date, "%Y-%m-%d").date()
+  except ValueError:
+    await interaction.response.send_message(
+        "❌ 日期格式錯誤，請使用 `YYYY-MM-DD`（例如 `2026-09-14`）。",
+        ephemeral=True,
+    )
+    return
+
+  # 檢查是否為已存在考試日期的前一天
+  # 假設已有的考試日期存在 exams_data 中，這裡我們對比所有的考試日期
+  is_valid_day = False
+  # 收集目前所有的考試日期 (假設內容或備註有安排考試，或是比對所有已登記的日期)
+  # 這裡以比對現有所有排程日期（或特定考試標記）的前一天為例：
+  existing_dates = set(e.get("date") for e in exams_data)
+
+  for d_str in existing_dates:
+    try:
+      d_obj = datetime.datetime.strptime(d_str, "%Y-%m-%d").date()
+      if input_date == d_obj - datetime.timedelta(days=1):
+        is_valid_day = True
+        break
+    except ValueError:
+      continue
+
+  # 如果完全沒有任何排程，或者剛好是某個排程日期的前一天，則允許新增
+  # 如果你想嚴格規定「必須是某個已有考試日期的前一天」，當 existing_dates 為空時也可以彈性放行或要求
+  if existing_dates and not is_valid_day:
+    # 組合提示哪些日期的前一天是可以被接受的
+    valid_suggestions = [
+        (
+            datetime.datetime.strptime(d, "%Y-%m-%d").date()
+            - datetime.timedelta(days=1)
+        ).strftime("%Y-%m-%d")
+        for d in existing_dates
+    ]
+    await interaction.response.send_message(
+        f"❌ 檢查失敗！新增的日期 `{date}` 必須是現有考試日期的**前一天**。\n💡 允許的前一天日期為：`{', '.join(set(valid_suggestions))}`",
+        ephemeral=True,
+    )
+    return
+
   new_id = max([e["id"] for e in exams_data], default=0) + 1
   new_exam = {"id": new_id, "date": date, "period": period, "content": content}
   exams_data.append(new_exam)
@@ -301,12 +358,14 @@ async def slash_add_schedule(
     await update_or_create_dashboard(target_channel)
 
   await interaction.response.send_message(
-      f"✅ 成功填入課表 (ID: {new_id})：`{date}` | `{period}`", ephemeral=True
+      f"✅ [前一天檢查通過] 成功填入課表 (ID: {new_id})：`{date}` | `{period}`",
+      ephemeral=True,
   )
 
 
-@bot.tree.command(name="del_schedule", description="[專屬版面] 透過項目 ID 刪除內容")
+@bot.tree.command(name="del_schedule", description="[版主專用] 透過項目 ID 刪除內容")
 @app_commands.describe(schedule_id="要刪除的項目 ID")
+@is_admin()
 @in_exclusive_channel()
 async def slash_del_schedule(
     interaction: discord.Interaction, schedule_id: int
@@ -332,7 +391,8 @@ async def slash_del_schedule(
     )
 
 
-@bot.tree.command(name="init_dashboard", description="[專屬版面] 生成課表面板")
+@bot.tree.command(name="init_dashboard", description="[版主專用] 生成課表面板")
+@is_admin()
 @in_exclusive_channel()
 async def slash_init_dashboard(interaction: discord.Interaction):
   target_channel = interaction.channel
@@ -342,7 +402,8 @@ async def slash_init_dashboard(interaction: discord.Interaction):
   )
 
 
-@bot.tree.command(name="檢視課表", description="開啟內嵌互動式課表介面")
+@bot.tree.command(name="檢視課表", description="[專屬版面] 開啟內嵌互動式課表介面")
+@in_exclusive_channel()
 async def slash_view_schedule(interaction: discord.Interaction):
   web_url = os.environ.get(
       "RENDER_External_URL", "https://mybot-v6cj.onrender.com"
