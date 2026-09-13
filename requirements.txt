@@ -1,0 +1,4 @@
+flask
+flask-socketio
+discord.py
+simple-websocket
