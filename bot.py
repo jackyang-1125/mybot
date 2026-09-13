@@ -5,20 +5,13 @@ import threading
 from flask import Flask, render_template_string
 import discord
 from discord import app_commands
-from discord.ext import commands, tasks
+from discord.ext import commands
 
-# ==================== 1. 設置 Flask 網頁伺服器 (解決 Render Port 問題並提供 HTML 彈出式視窗) ====================
+# ==================== 1. 設置 Flask 網頁伺服器 (Wordle 風格彈出式 Modal 互動課表) ====================
 app = Flask(__name__)
 
-# 記憶體資料庫
-exams_data = [
-    {
-        "id": 1,
-        "date": "2026-09-14",
-        "period": "第1節",
-        "content": "國文<br>張美涵",
-    }
-]
+# 初始資料清空（移除預設項目）
+exams_data = []
 
 # 專屬論壇 / 討論串 ID
 EXCLUSIVE_CHANNEL_ID = 1548647622263181342
@@ -31,20 +24,46 @@ HTML_TEMPLATE = """
     <meta charset="UTF-8">
     <title>班級互動式課表</title>
     <style>
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #313338; color: #dbdee1; padding: 20px; margin: 0; }
-        h2 { text-align: center; color: #fff; }
-        .table-container { overflow-x: auto; background: #2b2d31; padding: 15px; border-radius: 8px; box-shadow: 0 4px 10px rgba(0,0,0,0.3); }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #313338; color: #dbdee1; padding: 20px; margin: 0; display: flex; flex-direction: column; align-items: center; }
+        h2 { color: #fff; margin-bottom: 10px; }
+        .table-container { width: 100%; max-width: 1100px; background: #2b2d31; padding: 15px; border-radius: 12px; box-shadow: 0 8px 24px rgba(0,0,0,0.4); overflow-x: auto; }
         table { width: 100%; border-collapse: collapse; text-align: center; font-size: 14px; }
-        th, td { border: 1px solid #3f4147; padding: 10px; vertical-align: middle; }
+        th, td { border: 1px solid #3f4147; padding: 12px 8px; vertical-align: middle; }
         th { background: #1e1f22; color: #f2f3f5; }
         tr:nth-child(even) { background: #2b2d31; }
         tr:nth-child(odd) { background: #313338; }
+        .schedule-cell { cursor: pointer; transition: background 0.2s; border-radius: 4px; }
+        .schedule-cell:hover { background: #3f4147; color: #fff; }
         .empty { color: #80848e; }
-        .sat-disabled { background: #232428 !important; color: #555; }
+        .sat-disabled { background: #232428 !important; color: #555; cursor: not-allowed; }
+
+        /* Wordle 風格彈出視窗 (Modal) */
+        .modal-overlay {
+            position: fixed; top: 0; left: 0; width: 100%; height: 100%;
+            background: rgba(0, 0, 0, 0.7); display: flex; justify-content: center; align-items: center;
+            opacity: 0; pointer-events: none; transition: opacity 0.25s ease-in-out; z-index: 1000;
+        }
+        .modal-overlay.active { opacity: 1; pointer-events: auto; }
+        .modal-box {
+            background: #313338; color: #dbdee1; padding: 24px; border-radius: 12px;
+            width: 90%; max-width: 400px; box-shadow: 0 10px 30px rgba(0,0,0,0.5);
+            transform: scale(0.8); transition: transform 0.25s cubic-bezier(0.175, 0.885, 0.32, 1.275);
+            border: 1px solid #3f4147; text-align: center;
+        }
+        .modal-overlay.active .modal-box { transform: scale(1); }
+        .modal-box h3 { margin-top: 0; color: #fff; font-size: 20px; border-bottom: 1px solid #3f4147; padding-bottom: 10px; }
+        .modal-content { font-size: 16px; margin: 20px 0; line-height: 1.6; white-space: pre-wrap; background: #2b2d31; padding: 12px; border-radius: 6px; }
+        .modal-close {
+            background: #5865f2; color: white; border: none; padding: 10px 20px;
+            font-size: 14px; border-radius: 6px; cursor: pointer; font-weight: bold; transition: background 0.2s;
+        }
+        .modal-close:hover { background: #4752c4; }
     </style>
 </head>
 <body>
     <h2>📅 班級互動式課表</h2>
+    <div style="font-size: 13px; color: #949ba4; margin-bottom: 15px;">點擊任意課程格子即可彈出詳細資訊</div>
+    
     <div class="table-container">
         <table>
             <thead>
@@ -65,17 +84,24 @@ HTML_TEMPLATE = """
                     <td><strong>{{ period_name }}</strong></td>
                     <td>{{ time_str }}</td>
                     {% for i in range(6) %}
+                        {# 星期六只上到第4節 (第0~4節有效，第5節以後停用) #}
                         {% if i == 5 and loop.index0 > 4 %}
                             <td class="sat-disabled">-</td>
                         {% else %}
-                            <td>
-                                {% set found = namespace(content='') %}
-                                {%- for item in exams_data -%}
-                                    {%- if item.period == period_name -%}
-                                        {{ found.content | safe }}
-                                    {%- endif -%}
-                                {%- endfor -%}
-                                {% if not found.content %}<span class="empty">-</span>{% endif %}
+                            {% set cell_data = namespace(text='', id='') %}
+                            {% for item in exams_data %}
+                                {% if item.period == period_name %}
+                                    {# 這裡可以依實際需求對應星期，目前簡化示範帶入符合該節次的資料 #}
+                                    {% set cell_data.text = item.content %}
+                                    {% set cell_data.id = item.id %}
+                                {% endif %}
+                            {% endfor %}
+                            <td class="schedule-cell" onclick="openModal('{{ period_name }}', '{{ time_str }}', '{{ cell_data.text | replace('\\n', '<br>') | safe }}', '{{ cell_data.id }}')">
+                                {% if cell_data.text %}
+                                    {{ cell_data.text | safe }}
+                                {% else %}
+                                    <span class="empty">-</span>
+                                {% endif %}
                             </td>
                         {% endif %}
                     {% endfor %}
@@ -84,6 +110,33 @@ HTML_TEMPLATE = """
             </tbody>
         </table>
     </div>
+
+    <!-- Wordle 風格彈出視窗 -->
+    <div class="modal-overlay" id="modalOverlay" onclick="closeModal(event)">
+        <div class="modal-box" onclick="event.stopPropagation()">
+            <h3 id="modalTitle">課程詳細資訊</h3>
+            <div class="modal-content" id="modalBody">無內容</div>
+            <button class="modal-close" onclick="closeModalDirect()">關閉</button>
+        </div>
+    </div>
+
+    <script>
+        function openModal(period, time, content, id) {
+            document.getElementById('modalTitle').innerText = period + " (" + time + ")";
+            if(content.trim() === "") {
+                document.getElementById('modalBody').innerHTML = "<span style='color: #80848e;'>目前無排程內容</span>";
+            } else {
+                document.getElementById('modalBody').innerHTML = content + (id ? "<br><br><span style='font-size:12px; color:#949ba4;'>項目 ID: #" + id + "</span>" : "");
+            }
+            document.getElementById('modalOverlay').classList.add('active');
+        }
+        function closeModal(e) {
+            document.getElementById('modalOverlay').classList.remove('active');
+        }
+        function closeModalDirect() {
+            document.getElementById('modalOverlay').classList.remove('active');
+        }
+    </script>
 </body>
 </html>
 """
@@ -129,45 +182,16 @@ async def on_ready():
     print(f"已同步 {len(synced)} 個 Slash 指令")
   except Exception as e:
     print(e)
-  daily_exam_reminder.start()
-
-
-@tasks.loop(hours=24)
-async def daily_exam_reminder():
-  now_taiwan = datetime.datetime.now(
-      datetime.timezone(datetime.timedelta(hours=8))
-  )
-  tomorrow = (now_taiwan + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
-
-  for exam in exams_data:
-    if exam["date"] == tomorrow:
-      channel = bot.get_channel(EXCLUSIVE_CHANNEL_ID)
-      if channel:
-        embed = discord.Embed(
-            title="📢 課程時間提醒",
-            description=(
-                f"明天 (**{tomorrow}**) 的排程：\n⏰ **{exam['period']}**\n📌"
-                f" **{exam['content']}**"
-            ),
-            color=0xFF5733,
-        )
-        await channel.send(content="@everyone", embed=embed)
-
-
-@daily_exam_reminder.before_loop
-async def before_reminder():
-  await bot.wait_until_ready()
 
 
 def create_dashboard_view():
-  # 取得 Render 部署網址（請確保將 YOUR_RENDER_URL 換成你實際的網址或透過環境變數傳入）
   web_url = os.environ.get(
       "RENDER_External_URL", "https://mybot-xxxx.onrender.com"
   )
   view = discord.ui.View(timeout=None)
   view.add_item(
       discord.ui.Button(
-          label="🌐 開啟互動式 HTML 課表",
+          label="🌐 開啟 Wordle 風格互動課表",
           style=discord.ButtonStyle.link,
           url=web_url,
       )
@@ -182,13 +206,13 @@ def create_dashboard_embed():
   embed = discord.Embed(
       title="📅 班級課表與時間總表",
       description=(
-          "點擊下方按鈕即可開啟**彈出式 HTML 互動網頁課表**（支援手機與電腦版"
-          "內嵌檢視）！\n\n➕ 新增指令：`/add_schedule` | 🗑️ 刪除指令：`/del_schedule`"
+          "點擊下方按鈕即可開啟**互動式網頁課表**（支援 Wordle 風格彈出視窗檢視詳細內容與老師）！\n\n➕"
+          " 新增指令：`/add_schedule` | 🗑️ 刪除指令：`/del_schedule`"
       ),
       color=0x3498DB,
       timestamp=now_taiwan,
   )
-  embed.set_footer(text="動態 HTML 課表系統")
+  embed.set_footer(text="動態互動式 HTML 課表系統")
   return embed
 
 
@@ -310,12 +334,11 @@ async def slash_init_dashboard(interaction: discord.Interaction):
   target_channel = interaction.channel
   await update_or_create_dashboard(target_channel)
   await interaction.response.send_message(
-      "✅ 互動式 HTML 課表面板已成功生成！", ephemeral=True
+      "✅ Wordle 風格彈出式互動 HTML 課表面板已成功生成！", ephemeral=True
   )
 
 
 if __name__ == "__main__":
-  # 同時啟動 Flask 網頁伺服器與 Discord 機器人
   threading.Thread(target=run_flask, daemon=True).start()
   token = os.environ.get("DISCORD_TOKEN", "YOUR_BOT_TOKEN_HERE")
   bot.run(token)
