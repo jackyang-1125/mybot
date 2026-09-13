@@ -10,13 +10,14 @@ intents = discord.Intents.default()
 intents.message_content = True
 bot = commands.Bot(command_prefix="!", intents=intents)
 
-# 記憶體資料庫（儲存純時間排程項目）
+# 記憶體資料庫（格式：日期、節次、你自己輸入的內容）
+# 例如: {"id": 1, "date": "2026-09-14", "period": "第1節", "content": "國文\n張美涵"}
 exams_data = [
     {
         "id": 1,
-        "date": "2026-09-15",
-        "period": "第0節早自修 (07:30-08:00)",
-        "content": "範例時間項目",
+        "date": "2026-09-14",
+        "period": "第1節",
+        "content": "國文\n張美涵",
     }
 ]
 
@@ -24,8 +25,7 @@ exams_data = [
 EXCLUSIVE_CHANNEL_ID = 1548647622263181342
 
 dashboard_message_id = None
-# 記錄目前面板顯示的週次偏移量（0 = 本週，+1 = 下一週，-1 = 上一週）
-current_week_offset = 0
+current_week_offset = 0  # 0 = 本週, +1 = 下一週, -1 = 上一週
 
 
 @bot.event
@@ -39,7 +39,7 @@ async def on_ready():
   daily_exam_reminder.start()
 
 
-# 背景任務：每天檢查一次提醒並 @everyone
+# 背景任務：每天檢查提醒並 @everyone
 @tasks.loop(hours=24)
 async def daily_exam_reminder():
   now_taiwan = datetime.datetime.now(
@@ -52,9 +52,9 @@ async def daily_exam_reminder():
       channel = bot.get_channel(EXCLUSIVE_CHANNEL_ID)
       if channel:
         embed = discord.Embed(
-            title="📢 時間排程提醒",
+            title="📢 課程/時間排程提醒",
             description=(
-                f"明天 (**{tomorrow}**) 有安排時間項目：\n"
+                f"明天 (**{tomorrow}**) 的排程項目：\n"
                 f"⏰ **{exam['period']}**\n"
                 f"📝 **{exam['content']}**"
             ),
@@ -72,75 +72,90 @@ def get_target_week_range(offset):
   now_taiwan = datetime.datetime.now(
       datetime.timezone(datetime.timedelta(hours=8))
   )
-  # 計算本週一與週日
   start_of_term = datetime.datetime(
       now_taiwan.year, 9, 1, tzinfo=datetime.timezone(datetime.timedelta(hours=8))
   )
   base_date = now_taiwan + datetime.timedelta(weeks=offset)
 
-  # 計算學年度第幾週
   delta_days = (base_date - start_of_term).days
   week_num = max(1, (delta_days // 7) + 1)
 
-  # 取得該週的星期一與星期日日期範圍
-  start_of_week = base_date - datetime.timedelta(days=base_date.weekday())
-  end_of_week = start_of_week + datetime.timedelta(days=6)
+  # 取得週一到週六的日期
+  start_of_week = base_date - datetime.timedelta(days=base_date.weekday())  # 週一
+  days = [start_of_week + datetime.timedelta(days=i) for i in range(6)]  # 週一至週六
 
-  return week_num, start_of_week.date(), end_of_week.date()
+  return week_num, days
 
 
 def create_dashboard_embed(week_offset):
-  week_num, start_date, end_date = get_target_week_range(week_offset)
+  week_num, days = get_target_week_range(week_offset)
   now_taiwan = datetime.datetime.now(
       datetime.timezone(datetime.timedelta(hours=8))
   )
 
+  # 對應截圖中的時間表結構
+  time_slots = [
+      ("第0節早自修", "07:30 - 08:00"),
+      ("第1節", "08:10 - 08:55"),
+      ("第2節", "09:15 - 10:00"),
+      ("第3節", "10:10 - 10:55"),
+      ("第4節", "11:05 - 11:50"),
+      ("第5節", "13:10 - 13:55"),
+      ("第6節", "14:10 - 14:55"),
+      ("第7節", "15:10 - 15:55"),
+      ("第8節", "16:05 - 16:50"),
+      ("第9節", "16:55 - 17:40"),
+      ("第10節", "17:45 - 18:30"),
+  ]
+
+  # 建立對應當週每一天日期的對照表 (YYYY-MM-DD -> 星期幾)
+  day_date_map = {}
+  headers = ["節次", "時間"]
+  weekdays_name = ["一", "二", "三", "四", "五", "六"]
+
+  for i, d in enumerate(days):
+    date_str = d.strftime("%Y-%m-%d")
+    day_date_map[i] = date_str
+    headers.append(f"{weekdays_name[i]}<br>({d.strftime('%m/%d')})")
+
+  # 用 Markdown 模擬真實 HTML 表格排版
+  table_lines = []
+  table_lines.append(
+      "| " + " | ".join(["節次", "時間", "一", "二", "三", "四", "五", "六"]) + " |"
+  )
+  table_lines.append("|" + "---|---|" + "---|---|" * 3)
+
+  for period_name, time_str in time_slots:
+    row = [period_name, time_str]
+    for i in range(6):
+      target_date = day_date_map[i]
+      # 尋找該日期與該節次的資料
+      matched = [
+          e
+          for e in exams_data
+          if e["date"] == target_date and e["period"] == period_name
+      ]
+      if matched:
+        # 顯示內容與 ID
+        content_str = matched[0]["content"].replace("\n", "<br>")
+        row.append(f"{content_str}<br>*(ID:{matched[0]['id']})*")
+      else:
+        row.append("-")
+    table_lines.append("| " + " | ".join(row) + " |")
+
+  table_markdown = "\n".join(table_lines)
+
   embed = discord.Embed(
-      title=f"📅 班級時間排程總表 (第 {week_num} 週)",
+      title=f"📅 班級課表與時間總表 (第 {week_num} 週)",
       description=(
-          f"🗓️ **日期區間：{start_date} ~ {end_date}**\n"
-          "💻 **[HTML 式排版檢視]**\n"
-          "使用下方按鈕切換上一週 / 下一週，或使用指令新增/刪除。"
+          f"📊 **HTML 模擬表格檢視**\n{table_markdown}\n\n"
+          "💡 使用下方按鈕切換 **上一週 / 下一週**\n"
+          "➕ 新增指令：`/add_schedule` | 🗑️ 刪除指令：`/del_schedule`"
       ),
-      color=0x2ECC71,
+      color=0x3498DB,
       timestamp=now_taiwan,
   )
-
-  # 篩選屬於該週的項目
-  filtered_exams = []
-  for exam in exams_data:
-    try:
-      exam_date = datetime.datetime.strptime(exam["date"], "%Y-%m-%d").date()
-      if start_date <= exam_date <= end_date:
-        filtered_exams.append(exam)
-    except ValueError:
-      pass
-
-  if not filtered_exams:
-    embed.add_field(
-        name="目前狀態",
-        value=f"🎉 第 {week_num} 週目前沒有任何時間排程！",
-        inline=False,
-    )
-  else:
-    sorted_exams = sorted(
-        filtered_exams, key=lambda x: (x["date"], x["period"])
-    )
-    for index, exam in enumerate(sorted_exams, 1):
-      table_row = (
-          f"┌─────────────────────────\n"
-          f"│ ID: #{exam['id']} | 日期: {exam['date']}\n"
-          f"│ ⏰ 時間: {exam['period']}\n"
-          f"│ 📌 內容: {exam['content']}\n"
-          f"└─────────────────────────"
-      )
-      embed.add_field(
-          name=f"項目 #{index}", value=f"```yaml\n{table_row}\n```", inline=False
-      )
-
-  embed.set_footer(
-      text=f"自動換週系統 • 偏移量: {week_offset} 週 (第 {week_num} 週)"
-  )
+  embed.set_footer(text=f"系統自動換週 • 當前顯示第 {week_num} 週")
   return embed
 
 
@@ -231,13 +246,28 @@ def in_exclusive_channel():
   return app_commands.check(predicate)
 
 
-@bot.tree.command(
-    name="add_schedule", description="[專屬版面] 新增純時間排程項目"
-)
+@bot.tree.command(name="add_schedule", description="[專屬版面] 在課表中填入內容")
 @app_commands.describe(
     date="日期 (格式：YYYY-MM-DD)",
-    period="時間/節次 (例如：第0節早自修 07:30-08:00)",
-    content="行程說明或備註",
+    period="選擇節次 (例如：第0節早自修、第1節至第10節)",
+    content="要填入的內容（例如：國文\n張美涵）",
+)
+@app_commands.choices(
+    period=[
+        app_commands.Choice(
+            name="第0節早自修 (07:30-08:00)", value="第0節早自修"
+        ),
+        app_commands.Choice(name="第1節 (08:10-08:55)", value="第1節"),
+        app_commands.Choice(name="第2節 (09:15-10:00)", value="第2節"),
+        app_commands.Choice(name="第3節 (10:10-10:55)", value="第3節"),
+        app_commands.Choice(name="第4節 (11:05-11:50)", value="第4節"),
+        app_commands.Choice(name="第5節 (13:10-13:55)", value="第5節"),
+        app_commands.Choice(name="第6節 (14:10-14:55)", value="第6節"),
+        app_commands.Choice(name="第7節 (15:10-15:55)", value="第7節"),
+        app_commands.Choice(name="第8節 (16:05-16:50)", value="第8節"),
+        app_commands.Choice(name="第9節 (16:55-17:40)", value="第9節"),
+        app_commands.Choice(name="第10節 (17:45-18:30)", value="第10節"),
+    ]
 )
 @in_exclusive_channel()
 async def slash_add_schedule(
@@ -259,14 +289,12 @@ async def slash_add_schedule(
     await update_or_create_dashboard(target_channel)
 
   await interaction.response.send_message(
-      f"✅ 成功新增排程 (ID: {new_id})：`{date}` | `{period}`", ephemeral=True
+      f"✅ 成功填入課表 (ID: {new_id})：`{date}` | `{period}`", ephemeral=True
   )
 
 
-@bot.tree.command(
-    name="del_schedule", description="[專屬版面] 透過項目 ID 刪除排程"
-)
-@app_commands.describe(schedule_id="要刪除的項目 ID")
+@bot.tree.command(name="del_schedule", description="[專屬版面] 透過項目 ID 刪除填入的內容")
+@app_commands.describe(schedule_id="要刪除的項目 ID (可從表格內看到)")
 @in_exclusive_channel()
 async def slash_del_schedule(
     interaction: discord.Interaction, schedule_id: int
@@ -284,7 +312,7 @@ async def slash_del_schedule(
     if target_channel:
       await update_or_create_dashboard(target_channel)
     await interaction.response.send_message(
-        f"🗑️ 已成功刪除 ID 為 #{schedule_id} 的排程！", ephemeral=True
+        f"🗑️ 已成功刪除 ID 為 #{schedule_id} 的項目！", ephemeral=True
     )
   else:
     await interaction.response.send_message(
@@ -292,15 +320,13 @@ async def slash_del_schedule(
     )
 
 
-@bot.tree.command(
-    name="init_dashboard", description="[專屬版面] 生成或重置時間排程面板"
-)
+@bot.tree.command(name="init_dashboard", description="[專屬版面] 生成或重置課表總表面板")
 @in_exclusive_channel()
 async def slash_init_dashboard(interaction: discord.Interaction):
   target_channel = interaction.channel
   await update_or_create_dashboard(target_channel)
   await interaction.response.send_message(
-      "✅ 時間排程總表面板已成功生成！", ephemeral=True
+      "✅ 課表總表面板已成功生成！", ephemeral=True
   )
 
 
