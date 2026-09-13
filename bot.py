@@ -1,4 +1,5 @@
 import datetime
+import asyncio
 import os
 import discord
 from discord import app_commands
@@ -20,7 +21,7 @@ exams_data = [
     }
 ]
 
-# ⚠️ 這裡已經設定為你的論壇/討論串 ID
+# 專屬論壇 / 討論串 ID
 EXCLUSIVE_CHANNEL_ID = 1548647622263181342
 
 dashboard_message_id = None
@@ -37,10 +38,12 @@ async def on_ready():
   daily_exam_reminder.start()
 
 
-# 背景任務：每天檢查一次，如果在明天有登記考試，就在前一天於指定版面發送提醒
+# 背景任務：每天檢查一次考試提醒，並 @everyone 通知大家
 @tasks.loop(hours=24)
 async def daily_exam_reminder():
-  now_taiwan = datetime.datetime.utcnow() + datetime.timedelta(hours=8)
+  now_taiwan = datetime.datetime.now(
+      datetime.timezone(datetime.timedelta(hours=8))
+  )
   tomorrow = (now_taiwan + datetime.timedelta(days=1)).strftime("%Y-%m-%d")
 
   for exam in exams_data:
@@ -55,7 +58,7 @@ async def daily_exam_reminder():
         embed.add_field(name="節次", value=exam["period"], inline=True)
         embed.add_field(name="科目", value=exam["subject"], inline=True)
         embed.add_field(name="備註/範圍", value=exam["note"], inline=False)
-        await channel.send(embed=embed)
+        await channel.send(content="@everyone", embed=embed)
 
 
 @daily_exam_reminder.before_loop
@@ -126,7 +129,6 @@ async def update_or_create_dashboard(channel):
   dashboard_message_id = msg.id
 
 
-# 檢查是否為專屬頻道或其底下的討論串
 def in_exclusive_channel():
   async def predicate(interaction: discord.Interaction):
     channel = interaction.channel
@@ -177,18 +179,16 @@ async def slash_add_exam(
   }
   exams_data.append(new_exam)
 
-  channel = bot.get_channel(EXCLUSIVE_CHANNEL_ID)
-  # 如果是在討論串裡執行，也可以直接更新當前討論串或指定頻道
   target_channel = (
       interaction.channel
       if isinstance(interaction.channel, discord.Thread)
-      else channel
+      else bot.get_channel(EXCLUSIVE_CHANNEL_ID)
   )
   if target_channel:
     await update_or_create_dashboard(target_channel)
 
   await interaction.response.send_message(
-      f"✅ 成功新增考試排程並已即時更新總表！\n> **{date} ({period}) {subject}**",
+      f"✅ 成功新增考試：{date} ({period}) {subject}！總表已即時更新。",
       ephemeral=True,
   )
 
