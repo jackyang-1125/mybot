@@ -211,7 +211,7 @@ def create_dashboard_embed():
       title="📅 班級課表與時間總表",
       description=(
           "點擊下方按鈕即可開啟**互動式網頁課表**！\n\n➕ 新增指令：`/add_schedule`"
-          " | 🗑️ 刪除指令：`/del_schedule` | 🔍 檢視指令：`/檢視課表`"
+          " | 🗑️ 刪除指令：`/del_schedule` | 📅 檢視指令：`/檢視課表`"
       ),
       color=0x3498DB,
       timestamp=now_taiwan,
@@ -342,21 +342,22 @@ async def slash_init_dashboard(interaction: discord.Interaction):
   )
 
 
-@bot.tree.command(name="檢視課表", description="檢視指定日期的課表與詳細資訊")
-@app_commands.describe(date="選擇要檢視的日期 (格式：YYYY-MM-DD)")
-async def slash_view_schedule(interaction: discord.Interaction, date: str):
-  day_exams = [e for e in exams_data if e.get("date") == date]
-
-  if not day_exams:
-    await interaction.response.send_message(
-        f"📅 `{date}` 目前沒有任何排程內容。", ephemeral=True
-    )
-    return
-
-  content_text = f"📅 **{date} 課表與內容**\n" + "\n".join([
-      f"- **{e['period']}**: {e['content']} (ID: #{e['id']})" for e in day_exams
-  ])
-  await interaction.response.send_message(content_text, ephemeral=True)
+@bot.tree.command(name="檢視課表", description="開啟內嵌互動式課表介面")
+async def slash_view_schedule(interaction: discord.Interaction):
+  web_url = os.environ.get(
+      "RENDER_External_URL", "https://mybot-v6cj.onrender.com"
+  )
+  view = discord.ui.View(timeout=None)
+  view.add_item(
+      discord.ui.Button(
+          label="📅 點擊開啟內嵌課表",
+          style=discord.ButtonStyle.link,
+          url=web_url,
+      )
+  )
+  await interaction.response.send_message(
+      "請點擊下方按鈕開啟互動課表：", view=view, ephemeral=True
+  )
 
 
 if __name__ == "__main__":
