@@ -13,6 +13,7 @@ app = Flask(__name__)
 exams_data = []
 EXCLUSIVE_CHANNEL_ID = 1548647622263181342
 dashboard_message_id = None
+custom_admin_id = None  # 儲存手動設定的版主 ID
 
 HTML_TEMPLATE = """
 <!DOCTYPE html>
@@ -188,19 +189,66 @@ async def on_ready():
     print(e)
 
 
-def create_dashboard_view():
-  web_url = os.environ.get(
-      "RENDER_External_URL", "https://mybot-v6cj.onrender.com"
+# 包含互動按鈕的 Dashboard View
+class DashboardView(discord.ui.View):
+
+  def __init__(self):
+    super().__init__(timeout=None)
+    web_url = os.environ.get(
+        "RENDER_External_URL", "https://mybot-v6cj.onrender.com"
+    )
+    # 按鈕 1：開啟互動課表
+    self.add_item(
+        discord.ui.Button(
+            label="🌐 開啟互動課表",
+            style=discord.ButtonStyle.link,
+            url=web_url,
+            row=0,
+        )
+    )
+
+  # 按鈕 2：提醒測試按鈕
+  @discord.ui.button(
+      label="🔔 提醒測試",
+      style=discord.ButtonStyle.primary,
+      custom_id="btn_test_reminder",
+      row=0,
   )
-  view = discord.ui.View(timeout=None)
-  view.add_item(
-      discord.ui.Button(
-          label="🌐 開啟互動課表",
-          style=discord.ButtonStyle.link,
-          url=web_url,
+  async def test_reminder_btn(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    await interaction.response.send_message(
+        "🔔 **[系統提醒測試]** 這是一則手動觸發的課表與考試提醒測試通知！",
+        ephemeral=True,
+    )
+
+  # 按鈕 3：設定版主按鈕
+  @discord.ui.button(
+      label="🛡️ 設定我為版主",
+      style=discord.ButtonStyle.secondary,
+      custom_id="btn_set_admin",
+      row=0,
+  )
+  async def set_admin_btn(
+      self, interaction: discord.Interaction, button: discord.ui.Button
+  ):
+    global custom_admin_id
+    # 檢查是否為伺服器管理員或擁有者
+    if (
+        not interaction.user.guild_permissions.administrator
+        and interaction.user != interaction.guild.owner
+    ):
+      await interaction.response.send_message(
+          "❌ 只有具有 Discord 伺服器管理員權限的人才能透過按鈕設定版主！",
+          ephemeral=True,
       )
-  )
-  return view
+      return
+
+    custom_admin_id = interaction.user.id
+    await interaction.response.send_message(
+        f"✅ 成功將 **{interaction.user.display_name}** 設為本系統的專屬版主！",
+        ephemeral=True,
+    )
 
 
 def create_dashboard_embed():
@@ -210,8 +258,9 @@ def create_dashboard_embed():
   embed = discord.Embed(
       title="📅 班級課表與時間總表",
       description=(
-          "點擊下方按鈕即可開啟**互動式網頁課表**！\n\n➕ 新增指令：`/add_schedule`"
-          " | 🗑️ 刪除指令：`/del_schedule` | 📅 檢視指令：`/檢視課表`"
+          "點擊下方按鈕即可開啟**互動式網頁課表**、測試提醒或設定版主！\n\n➕"
+          " 新增指令：`/add_schedule` | 🗑️ 刪除指令：`/del_schedule` | 📅"
+          " 檢視指令：`/檢視課表`"
       ),
       color=0x3498DB,
       timestamp=now_taiwan,
@@ -223,7 +272,7 @@ def create_dashboard_embed():
 async def update_or_create_dashboard(channel):
   global dashboard_message_id
   embed = create_dashboard_embed()
-  view = create_dashboard_view()
+  view = DashboardView()
 
   if dashboard_message_id:
     try:
@@ -237,12 +286,16 @@ async def update_or_create_dashboard(channel):
   dashboard_message_id = msg.id
 
 
-# 檢查是否為管理員 (版主) 的 Decorator
+# 檢查是否為版主（伺服器管理員或透過按鈕/指令指定的版主）
 def is_admin():
   async def predicate(interaction: discord.Interaction):
-    if not interaction.user.guild_permissions.administrator:
+    global custom_admin_id
+    is_server_admin = interaction.user.guild_permissions.administrator
+    is_custom = custom_admin_id and interaction.user.id == custom_admin_id
+
+    if not (is_server_admin or is_custom):
       await interaction.response.send_message(
-          "❌ 只有伺服器管理員（版主）才能執行此指令！", ephemeral=True
+          "❌ 只有版主或伺服器管理員才能執行此指令！", ephemeral=True
       )
       return False
     return True
@@ -312,7 +365,6 @@ async def slash_add_schedule(
     )
     return
 
-  # 檢查是否為已存在考試日期的前一天
   is_valid_day = False
   existing_dates = set(e.get("date") for e in exams_data)
 
@@ -377,8 +429,7 @@ async def slash_del_schedule(
     if target_channel:
       await update_or_create_dashboard(target_channel)
     await interaction.response.send_message(
-        f"🗑️ 已成功刪除 ID 為 #{schedule_id} 的項目！",
-        ephemeral=True,
+        f"🗑️ 已成功刪除 ID 為 #{schedule_id} 的項目！", ephemeral=True
     )
   else:
     await interaction.response.send_message(
@@ -397,7 +448,38 @@ async def slash_init_dashboard(interaction: discord.Interaction):
   )
 
 
-# 所有人皆可使用，且只有自己看得到 (ephemeral=True)
+@bot.tree.command(
+    name="set_admin", description="[管理員專用] 指定某位使用者成為系統版主"
+)
+@app_commands.describe(user="選擇要設為版ơ的使用者")
+async def slash_set_admin(interaction: discord.Interaction, user: discord.Member):
+  if (
+      not interaction.user.guild_permissions.administrator
+      and interaction.user != interaction.guild.owner
+  ):
+    await interaction.response.send_message(
+        "❌ 只有伺服器管理員才能指派版主！", ephemeral=True
+    )
+    return
+
+  global custom_admin_id
+  custom_admin_id = user.id
+  await interaction.response.send_message(
+      f"✅ 已成功將 **{user.display_name}** 指定為系統專屬版主！",
+      ephemeral=True,
+  )
+
+
+@bot.tree.command(
+    name="提醒測試", description="[公開] 手動觸發並接收一則私密提醒測試"
+)
+async def slash_test_reminder(interaction: discord.Interaction):
+  await interaction.response.send_message(
+      "🔔 **[提醒測試]** 這是一則透過斜線指令觸發的私密提醒測試！",
+      ephemeral=True,
+  )
+
+
 @bot.tree.command(
     name="檢視課表", description="[公開] 取得只有自己看得見的互動課表連結"
 )
